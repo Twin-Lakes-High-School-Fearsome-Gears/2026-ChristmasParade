@@ -7,3 +7,6 @@ void loop() {
   // put your main code here, to run repeatedly:
 
 }
+move(int x, int y, int z, int time){
+  
+}
