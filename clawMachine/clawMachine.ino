@@ -1,5 +1,21 @@
+#include <math.h>
+#include <Servo.h>
+
+Servo Y1motorSparkMax;
+Servo Y2motorSparkMax;
+Servo XmotorSparkMax;
+Servo ZmotorSparkMax;
+
+const int ELECTROMAGNETPIN = 2;
+
+
+id setup() {
+  digitialWrite(electromagnaticPin, OUTPUT);
+}
+
+
 void setup() {
-  // put your setup code here, to run once:
+  pinMode(electromagnaticPin, OUTPUT);
 
 }
 
