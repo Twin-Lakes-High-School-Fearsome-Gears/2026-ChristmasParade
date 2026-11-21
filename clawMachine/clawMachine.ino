@@ -18,7 +18,8 @@ int forwardXSpeed = 1800;
 int backwardXSpeed = 1200;
 int backwardYSpeed = 1400;
 int stationarySpeed = 1500;
-int clawSpeed = 1200;
+int clawLowerSpeed = 1200;
+int clawRaiseSpeed = 1800;
 
 int X_MIN_LIMIT_PIN = 2;
 int X_MAX_LIMIT_PIN = 1;
@@ -37,21 +38,9 @@ int joyYForward = A5;
 int joyYBack = A6;
 int claw = 13;
 
-
-enum Y_POSITION {
-  TOP,
-  BOTTOM,    // Automatically 3
-  Y_UNKNOWN
-};
-
-enum X_POSITION {
-  LEFT,
-  RIGHT,
-  X_UNKNOWN
-};
-
-Y_POSITION yPos = Y_UNKNOWN;
-X_POSITION xPos = X_UNKNOWN;
+// Mode select switch: LOW = auto mode, HIGH = manual mode.
+// TODO: set to the pin the switch is actually wired to.
+int MODE_SWITCH_PIN = 2;
 
 typedef struct {
   int x;
@@ -67,12 +56,21 @@ clawPositionAnimationStep clawAnimation[1] = {
 int currentAnimationStep = 0;
 bool isResetting = true;
 
+// Y homing between animation steps.
+// TODO: measure how long Y takes to drive end-to-end at forwardYSpeed/backwardYSpeed.
+const unsigned long Y_FULL_TRAVEL_MILLIS = 4000;
+bool isHomingY = false;
+bool homingYToMax = true;  // which Y end the current homing is heading to
+bool yLastHomedAtMax = true;  // which Y end the current step started from
+
 void setup() {
   pinMode(joyXLeft, INPUT);
   pinMode(joyXRight, INPUT);
   pinMode(joyYForward, INPUT);
   pinMode(joyYBack, INPUT);
   pinMode(claw, INPUT);
+  // Pullup so a disconnected switch reads HIGH and defaults to manual mode.
+  pinMode(MODE_SWITCH_PIN, INPUT_PULLUP);
 
   pinMode(ELECTROMAGNET_PIN, OUTPUT);
   YLeftMotorSparkMax.attach(Y_LEFT_MOTOR_PIN);
@@ -81,7 +79,7 @@ void setup() {
   ZmotorSparkMax.attach(Z_MOTOR_PIN);
   Serial.begin(9600);
   while (!P1.init()){ 
-    ; //Wait for Modules to Sign on   
+    ; //Wait for Modules to Sign on
   }
 }
 
@@ -92,26 +90,93 @@ int channelTwo;
 unsigned long clawButtonPreviousTime = 0;
 unsigned long clawButtonHeldTime = 0;
 
+bool wasAutoMode = false;
+
 void loop() {
-  /*
-  if(isResetting){
-    if(!timerHasElapsed(2)){
-      //reset the claw to the bottom left position
-      move(backwardXSpeed,backwardSpeed,0);
-    } else {
+  bool autoMode = (digitalRead(MODE_SWITCH_PIN) == LOW);
+
+  // On a mode change, stop everything and start auto mode fresh from home.
+  if (autoMode != wasAutoMode) {
+    stopAllMotors();
+    if (autoMode) {
+      isResetting = true;
+      isHomingY = false;
+      currentAnimationStep = 0;
+    }
+    wasAutoMode = autoMode;
+  }
+
+  if (autoMode) {
+    handleAutoMode();
+  } else {
+    handleManualMode();
+  }
+}
+
+// Runs the claw through the pre-programmed animation.
+void handleAutoMode() {
+  if (isResetting) {
+    // Drive to the home corner (X min, Y max), squaring the Y sides on the way.
+    move(backwardXSpeed, 0, 0);
+    bool yHomed = homeY(true);
+    if (limitHit(X_MIN_LIMIT_PIN) && yHomed) {
       isResetting = false;
+      yLastHomedAtMax = true;
+      currentAnimationStep = 0;
+      startTimer();
+    }
+  } else if (isHomingY) {
+    // Between steps: hold X and Z still and re-home Y to the nearest end.
+    move(0, 0, 0);
+    if (homeY(homingYToMax)) {
+      isHomingY = false;
+      yLastHomedAtMax = homingYToMax;
+      startTimer();  // next step's time starts once we're homed
     }
   } else {
     clawPositionAnimationStep animationEvent = clawAnimation[currentAnimationStep];
-    if(!timerHasElapsed(animationEvent.seconds)) {
-      move(animationEvent.x, animationEvent.y, animationEvent.z);
-    } else {
+    move(animationEvent.x, animationEvent.y, animationEvent.z);
+    if (timerHasElapsed(animationEvent.seconds)) {
+      homingYToMax = nearestYEndIsMax(animationEvent);
       goToNextAnimationStep();
+      // The last step goes into a full reset instead, which homes Y anyway.
+      if (!isResetting) {
+        isHomingY = true;
+      }
     }
+  }
+}
 
-  }*/
-  P1.readDiscrete(1,1);  //Turn slot 1 channel 2 on
-  P1.writeDiscrete(HIGH,1,1);  //Turn slot 1 channel 2 on
+// Estimates where Y ended up after a step and returns true if the Y max end is closer.
+// Every step starts from a homed Y end, so position = start end +/- the step's Y travel time.
+bool nearestYEndIsMax(clawPositionAnimationStep step) {
+  long millisFromMax = yLastHomedAtMax ? 0 : (long)Y_FULL_TRAVEL_MILLIS;
+  long stepMillis = (long)step.seconds * 1000L;
+  if (step.y > stationarySpeed) {
+    millisFromMax += stepMillis;  // y above stationary drives toward Y min
+  } else if (step.y != 0 && step.y < stationarySpeed) {
+    millisFromMax -= stepMillis;  // y below stationary drives toward Y max
+  }
+  return millisFromMax <= (long)(Y_FULL_TRAVEL_MILLIS / 2);
+}
+
+// Drives each Y motor toward one end until its OWN limit switch is pressed,
+// so both sides finish square against the end. Returns true when both are pressed.
+bool homeY(bool toMax) {
+  bool rightDone = limitHit(toMax ? Y_RIGHT_MAX_LIMIT_PIN : Y_RIGHT_MIN_LIMIT_PIN);
+  bool leftDone = limitHit(toMax ? Y_LEFT_MAX_LIMIT_PIN : Y_LEFT_MIN_LIMIT_PIN);
+
+  // Same directions as manual mode: toward max = right backward / left forward.
+  int rightSpeed = toMax ? backwardYSpeed : forwardYSpeed;
+  int leftSpeed = toMax ? forwardYSpeed : backwardYSpeed;
+
+  YRightMotorSparkMax.writeMicroseconds(rightDone ? stationarySpeed : rightSpeed);
+  YLeftMotorSparkMax.writeMicroseconds(leftDone ? stationarySpeed : leftSpeed);
+  return rightDone && leftDone;
+}
+
+// Drives the claw directly from the joystick/button inputs.
+void handleManualMode() {
 
   if (isPressed(joyXLeft) && (P1.readDiscrete(1,X_MAX_LIMIT_PIN) == LOW)){
     XmotorSparkMax.writeMicroseconds(forwardXSpeed);
@@ -145,7 +210,7 @@ void loop() {
   }
   
   if(digitalRead(claw) == LOW){
-    ZmotorSparkMax.writeMicroseconds(clawSpeed);
+    ZmotorSparkMax.writeMicroseconds(clawLowerSpeed);
     Serial.println(digitalRead(claw));
     Serial.println("claw");
     if(clawButtonPreviousTime == 0){
@@ -153,24 +218,21 @@ void loop() {
     }
 
   } else {
-    if(clawButtonHeldTime == 0){//Button unpressed
+    if(clawButtonHeldTime == 0 && clawButtonPreviousTime != 0){//Button just released
       unsigned long clawButtonCurrentTime = millis();
       clawButtonHeldTime = clawButtonCurrentTime - clawButtonPreviousTime;
       clawButtonPreviousTime = clawButtonCurrentTime;
     }
     unsigned long clawButtonCurrentTime = millis();
     long elapsedTimeMillis = clawButtonCurrentTime - clawButtonPreviousTime;
-    if(clawButtonHeldTime != 0 && elapsedTimeMillis >= clawButtonHeldTime){//reseting claw after button has been pressed
-      ZmotorSparkMax.writeMicroseconds(forwardXSpeed);
-    } else {//button has been unpressed and time has elapsed
-    XmotorSparkMax.writeMicroseconds(stationarySpeed);
-    YLeftMotorSparkMax.writeMicroseconds(stationarySpeed);
-    YRightMotorSparkMax.writeMicroseconds(stationarySpeed);
+    if(clawButtonHeldTime != 0 && elapsedTimeMillis < clawButtonHeldTime){//raising claw for as long as it was lowered
+      ZmotorSparkMax.writeMicroseconds(clawRaiseSpeed);
+    } else {//claw is back up (or was never lowered)
     ZmotorSparkMax.writeMicroseconds(stationarySpeed);
     clawButtonHeldTime = 0;
     clawButtonPreviousTime = 0;
     }
-  
+
   }
   
 }
@@ -180,72 +242,66 @@ bool isPressed(int button) {
 }
 
 void goToNextAnimationStep() {
-  size_t n = sizeof(clawAnimation)/sizeof(clawAnimation[0]);
-  if(currentAnimationStep >= n){
-    isResetting = true;
+  const int stepCount = sizeof(clawAnimation) / sizeof(clawAnimation[0]);
+  currentAnimationStep++;
+  if (currentAnimationStep >= stepCount) {
+    // Finished the animation: go home and start over.
     currentAnimationStep = 0;
-  } else {
-    currentAnimationStep = currentAnimationStep + 1;
+    isResetting = true;
   }
 }
 
-unsigned long previousMillis = 0;   // Stores last time the event updated
+unsigned long previousMillis = 0;   // Stores when the current timer started
+
+void startTimer() {
+  previousMillis = millis();
+}
+
+// Returns true once `seconds` have passed since the timer started, and restarts the timer.
 bool timerHasElapsed(int seconds) {
   unsigned long currentMillis = millis();
-  long elapsedTimeMillis = currentMillis - previousMillis;
-  if(elapsedTimeMillis >= seconds * 1000) {
-    //Reset our timer
+  if (currentMillis - previousMillis >= (unsigned long)seconds * 1000UL) {
     previousMillis = currentMillis;
     return true;
   }
-}
-
-void move(int x, int y, int z){
-  if( x != 0 && !xLimitSwitchHit()) {
-    XmotorSparkMax.writeMicroseconds(x);
-  }
-  if(y != 0 && !yLimitSwitchHit()){
-    YRightMotorSparkMax.writeMicroseconds(y);
-    YLeftMotorSparkMax.writeMicroseconds(y);
-  }
-  if(z != 0){
-    XmotorSparkMax.writeMicroseconds(z);
-  }
-
-  //if we are moving to the bottom left and are there go ahead and mark us as having been reset
-  if(xPos == LEFT && yPos == BOTTOM && isResetting) {
-    isResetting = false;
-    //reset timer
-    previousMillis = 0;
-  }
-}
-
-bool xLimitSwitchHit() {
-  if (digitalRead(X_MIN_LIMIT_PIN) == HIGH)
-  { 
-    xPos = LEFT;
-    return true;
-  } else if (digitalRead(X_MAX_LIMIT_PIN) == HIGH) {
-    xPos = RIGHT;
-    return true;
-  }
-  xPos = X_UNKNOWN;
   return false;
 }
 
-bool yLimitSwitchHit() {
-  if(digitalRead(Y_LEFT_MIN_LIMIT_PIN) == HIGH || digitalRead(Y_RIGHT_MIN_LIMIT_PIN) == HIGH) {
+// Limit switches live on P1 slot 1; HIGH means the switch is pressed.
+bool limitHit(int channel) {
+  return P1.readDiscrete(1, channel) == HIGH;
+}
 
-    yPos = BOTTOM;
-    return true;
-  } else if (digitalRead(Y_LEFT_MAX_LIMIT_PIN) == HIGH || digitalRead(Y_RIGHT_MAX_LIMIT_PIN) == HIGH) {
+void stopAllMotors() {
+  XmotorSparkMax.writeMicroseconds(stationarySpeed);
+  YLeftMotorSparkMax.writeMicroseconds(stationarySpeed);
+  YRightMotorSparkMax.writeMicroseconds(stationarySpeed);
+  ZmotorSparkMax.writeMicroseconds(stationarySpeed);
+}
 
-    yPos = BOTTOM;
-    return true;
-  } else {
-    yPos = Y_UNKNOWN;
-    return false;
-  }
+// Moves each axis at the given speed (microseconds; 0 = stop).
+// Each axis only stops for the limit switch in the direction it is moving,
+// so it can always drive back out of a corner. Directions match manual mode.
+void move(int x, int y, int z) {
+  // X: above stationary runs toward X max, below runs toward X min.
+  int xSpeed = (x == 0) ? stationarySpeed : x;
+  if (xSpeed > stationarySpeed && limitHit(X_MAX_LIMIT_PIN)) xSpeed = stationarySpeed;
+  if (xSpeed < stationarySpeed && limitHit(X_MIN_LIMIT_PIN)) xSpeed = stationarySpeed;
+  XmotorSparkMax.writeMicroseconds(xSpeed);
+
+  // Y: `y` is the right motor's speed; the left motor is mirrored.
+  // Right above stationary runs toward Y min, below runs toward Y max.
+  int ySpeed = (y == 0) ? stationarySpeed : y;
+  if (ySpeed > stationarySpeed &&
+      (limitHit(Y_RIGHT_MIN_LIMIT_PIN) || limitHit(Y_LEFT_MIN_LIMIT_PIN))) ySpeed = stationarySpeed;
+  if (ySpeed < stationarySpeed &&
+      (limitHit(Y_RIGHT_MAX_LIMIT_PIN) || limitHit(Y_LEFT_MAX_LIMIT_PIN))) ySpeed = stationarySpeed;
+  YRightMotorSparkMax.writeMicroseconds(ySpeed);
+  YLeftMotorSparkMax.writeMicroseconds(2 * stationarySpeed - ySpeed);
+
+  // Z (claw): no limit switches in use, same as manual mode.
+  int zSpeed = (z == 0) ? stationarySpeed : z;
+  ZmotorSparkMax.writeMicroseconds(zSpeed);
 }
 
 
