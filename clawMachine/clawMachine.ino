@@ -19,7 +19,7 @@ int backwardXSpeed = 1200;
 int backwardYSpeed = 1300;
 int stationarySpeed = 1500;
 int clawLowerSpeed = 1300;
-int clawRaiseSpeed = 1700;
+int clawRaiseSpeed = 1750;
 
 int X_MIN_LIMIT_PIN = 2;
 int X_MAX_LIMIT_PIN = 1;
@@ -48,13 +48,31 @@ typedef struct {
   int z;
   int seconds;
 } clawPositionAnimationStep;
-
+ int CLAW_LOWER_SEC = 3.6;
 clawPositionAnimationStep clawAnimation[] = {
-    {0, 0, clawLowerSpeed, 5},
-    {0, 0, clawRaiseSpeed, 5},
-    {0, forwardYSpeed, 0, 13},
-    {0, 0, clawLowerSpeed, 5},
-    {0, 0, clawRaiseSpeed, 5}
+    {0, 0, clawLowerSpeed, CLAW_LOWER_SEC},
+    {0, 0, clawRaiseSpeed, CLAW_LOWER_SEC},  //Home postion 1 pick up box
+    {0, forwardYSpeed, 0, 15},  //move from 1 - 2
+    {0, 0, clawLowerSpeed, CLAW_LOWER_SEC},  // put down box
+    {0, 0, clawRaiseSpeed, CLAW_LOWER_SEC},
+    {forwardXSpeed, 0, 0, 10},  // move from 2 - 3 
+    {0, 0, clawLowerSpeed, CLAW_LOWER_SEC},  // pick up box
+    {0, 0, clawRaiseSpeed, CLAW_LOWER_SEC},
+    {0, backwardYSpeed, 0, 15},  // move from 3 - 4
+    {0, 0, clawLowerSpeed, CLAW_LOWER_SEC},  //put down box
+    {0, 0, clawRaiseSpeed, CLAW_LOWER_SEC},
+    {backwardXSpeed, forwardYSpeed, 0, 15},  //move from 4 - 2 
+    {0, 0, clawLowerSpeed, CLAW_LOWER_SEC},  //pick up box
+    {0, 0, clawRaiseSpeed, CLAW_LOWER_SEC},
+    {forwardXSpeed, 0, 0, 10},  // move from 2 - 3
+    {0, 0, clawLowerSpeed, CLAW_LOWER_SEC},  //put down box
+    {0, 0, clawRaiseSpeed, CLAW_LOWER_SEC},
+    {0, backwardYSpeed, 0, 15},  // move from 3 - 4
+    {0, 0, clawLowerSpeed, CLAW_LOWER_SEC},  //pick up box
+    {0, 0, clawRaiseSpeed, CLAW_LOWER_SEC},
+    {backwardXSpeed, 0, 0, 10},  // move from 4 - 1
+    {0, 0, clawLowerSpeed, CLAW_LOWER_SEC},  // put down box
+    {0, 0, clawRaiseSpeed, CLAW_LOWER_SEC},
 };
 
 int currentAnimationStep = 0;
